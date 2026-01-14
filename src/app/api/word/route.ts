@@ -9,7 +9,7 @@ type Secret = {
   hints: string[];
 };
 
-const HF_API_URL = "https://api-inference.huggingface.co/models";
+const HF_API_URL = "https://router.huggingface.co/hf-inference/models";
 
 // Modelo recomendado “barato/rápido” para serverless.
 // Puedes cambiarlo si quieres (ojo: algunos modelos están “gated” o no soportados serverless).
