@@ -85,7 +85,8 @@ function chooseSecretFromLocal(selectedCategoryList: string[], usedWords: string
 function buildImpostorHintOnce(secret: Secret, hintStyle: string) {
   if (!secret) return "";
   if (hintStyle === "category") return `Categoría: ${secret.category}`;
-  if (hintStyle === "first_letter") return `Empieza por: ${String(secret.word).slice(0, 1).toUpperCase()}`;
+  if (hintStyle === "first_letter")
+    return `Empieza por: ${String(secret.word).slice(0, 1).toUpperCase()}`;
   const hs = (secret.hints || []).filter(Boolean);
   if (!hs.length) return `Categoría: ${secret.category}`;
   return `Pista: ${pickRandom(hs)}`;
@@ -135,7 +136,7 @@ export default function ImpostorPalabraMobile() {
   // Reveal
   const [revealIndex, setRevealIndex] = useState(0);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
-  const [revealShown, setRevealShown] = useState(false);
+  const [revealShown, setRevealShown] = useState(false); // “algo visible / destapando”
   const [pendingNav, setPendingNav] = useState(0); // -1 | +1
 
   // Vote
@@ -151,7 +152,7 @@ export default function ImpostorPalabraMobile() {
     [categoryNames, selectedCategories]
   );
 
-  // ✅ FIX selector impostores: depende de inputs, no de nombres rellenados
+  // ✅ Selector impostores: depende de inputs, no de nombres rellenados
   const playersCount = players.length;
   const maxImpostors = Math.max(1, playersCount - 1);
 
@@ -171,12 +172,12 @@ export default function ImpostorPalabraMobile() {
     selectedCategoryList.length >= 1 &&
     !starting;
 
-  // Cuando cambia jugador, se oculta sí o sí
+  // Cambiar de jugador => tapado
   useEffect(() => {
     setRevealShown(false);
   }, [revealIndex]);
 
-  // Navegación 1 toque: si estaba mostrado, ocultamos y luego avanzamos/retrocedemos
+  // Navegación 1 toque: si se está “destapando/mostrando”, ocultamos y luego navegamos
   useEffect(() => {
     if (pendingNav === 0) return;
     if (revealShown) return;
@@ -265,7 +266,6 @@ export default function ImpostorPalabraMobile() {
   }
 
   function nextReveal(delta: number) {
-    // 1 toque: si está mostrando, primero ocultamos y luego navegamos (useEffect)
     if (revealShown) {
       setPendingNav(delta);
       setRevealShown(false);
@@ -305,7 +305,12 @@ export default function ImpostorPalabraMobile() {
 
         <AnimatePresence mode="wait">
           {phase === PHASES.SETUP && (
-            <motion.div key="setup" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+            <motion.div
+              key="setup"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+            >
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Configurar</CardTitle>
@@ -314,7 +319,11 @@ export default function ImpostorPalabraMobile() {
                   <div className="grid gap-2">
                     <div className="flex items-center justify-between">
                       <Label>Jugadores</Label>
-                      <Button variant="outline" size="sm" onClick={() => setPlayers((ps) => [...ps, { id: uid(), name: "" }])}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setPlayers((ps) => [...ps, { id: uid(), name: "" }])}
+                      >
                         +
                       </Button>
                     </div>
@@ -352,13 +361,19 @@ export default function ImpostorPalabraMobile() {
                       {categoryNames.map((c) => {
                         const on = !!selectedCategories[c];
                         return (
-                          <Button key={c} variant={on ? "default" : "outline"} onClick={() => setSelectedCategories((s) => ({ ...s, [c]: !s[c] }))}>
+                          <Button
+                            key={c}
+                            variant={on ? "default" : "outline"}
+                            onClick={() => setSelectedCategories((s) => ({ ...s, [c]: !s[c] }))}
+                          >
                             {c}
                           </Button>
                         );
                       })}
                     </div>
-                    {selectedCategoryList.length === 0 && <div className="text-xs text-black/60">Selecciona al menos 1.</div>}
+                    {selectedCategoryList.length === 0 && (
+                      <div className="text-xs text-black/60">Selecciona al menos 1.</div>
+                    )}
                   </div>
 
                   <Separator />
@@ -390,13 +405,22 @@ export default function ImpostorPalabraMobile() {
 
                     {giveImpostorHint && (
                       <div className="flex flex-wrap gap-2">
-                        <Button variant={hintStyle === "random_hint" ? "default" : "outline"} onClick={() => setHintStyle("random_hint")}>
+                        <Button
+                          variant={hintStyle === "random_hint" ? "default" : "outline"}
+                          onClick={() => setHintStyle("random_hint")}
+                        >
                           Relacionada
                         </Button>
-                        <Button variant={hintStyle === "category" ? "default" : "outline"} onClick={() => setHintStyle("category")}>
+                        <Button
+                          variant={hintStyle === "category" ? "default" : "outline"}
+                          onClick={() => setHintStyle("category")}
+                        >
                           Categoría
                         </Button>
-                        <Button variant={hintStyle === "first_letter" ? "default" : "outline"} onClick={() => setHintStyle("first_letter")}>
+                        <Button
+                          variant={hintStyle === "first_letter" ? "default" : "outline"}
+                          onClick={() => setHintStyle("first_letter")}
+                        >
                           1ª letra
                         </Button>
                       </div>
@@ -421,7 +445,12 @@ export default function ImpostorPalabraMobile() {
           )}
 
           {phase === PHASES.REVEAL && (
-            <motion.div key="reveal" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+            <motion.div
+              key="reveal"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+            >
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Privado</CardTitle>
@@ -440,19 +469,19 @@ export default function ImpostorPalabraMobile() {
                   {(() => {
                     const p = currentRevealPlayer();
                     if (!p || !secret) return null;
+
                     const isImp = impostorIds.includes(p.id);
                     const hint = giveImpostorHint ? impostorHintText : "";
 
                     return (
                       <div className="relative">
-                        {/* Privacy shield: oscurece todo menos la tarjeta */}
+                        {/* Privacy shield: oscurece todo el viewport mientras se destapa/ve */}
                         {revealShown && (
                           <div className="fixed inset-0 z-40 pointer-events-none">
                             <div className="absolute inset-0 bg-black/70" />
                           </div>
                         )}
 
-                        {/* La tarjeta va por encima del shield */}
                         <div className="relative z-50">
                           <RevealPanel
                             key={p.id}
@@ -463,6 +492,7 @@ export default function ImpostorPalabraMobile() {
                             showHint={giveImpostorHint}
                             shown={revealShown}
                             onShow={() => {
+                              // al empezar a destapar, marcamos y activamos shield
                               markRevealed(p.id);
                               setRevealShown(true);
                             }}
@@ -474,7 +504,12 @@ export default function ImpostorPalabraMobile() {
                   })()}
 
                   <div className="flex gap-2">
-                    <Button variant="outline" className="flex-1" onClick={() => nextReveal(-1)} disabled={revealIndex === 0}>
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => nextReveal(-1)}
+                      disabled={revealIndex === 0}
+                    >
                       Anterior
                     </Button>
                     <Button
@@ -491,14 +526,21 @@ export default function ImpostorPalabraMobile() {
                     <Vote className="w-4 h-4" /> Empezar votación
                   </Button>
 
-                  {!revealDone() && <div className="text-xs text-black/60">Todos deben ver su pantalla antes de votar.</div>}
+                  {!revealDone() && (
+                    <div className="text-xs text-black/60">Todos deben ver su pantalla antes de votar.</div>
+                  )}
                 </CardContent>
               </Card>
             </motion.div>
           )}
 
           {phase === PHASES.VOTE && (
-            <motion.div key="vote" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+            <motion.div
+              key="vote"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+            >
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Votación</CardTitle>
@@ -534,7 +576,12 @@ export default function ImpostorPalabraMobile() {
           )}
 
           {phase === PHASES.RESULT && (
-            <motion.div key="result" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+            <motion.div
+              key="result"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+            >
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Resultado</CardTitle>
@@ -542,7 +589,9 @@ export default function ImpostorPalabraMobile() {
                 <CardContent className="grid gap-3">
                   <div className="rounded-2xl border border-black/10 p-4">
                     <div className="text-xs text-black/60">Más votado</div>
-                    <div className="text-xl font-semibold">{validPlayers.find((p) => p.id === mostVotedId)?.name || ""}</div>
+                    <div className="text-xl font-semibold">
+                      {validPlayers.find((p) => p.id === mostVotedId)?.name || ""}
+                    </div>
                   </div>
 
                   {resultHit ? (
@@ -582,6 +631,13 @@ export default function ImpostorPalabraMobile() {
   );
 }
 
+/**
+ * RevealPanel “destapar tarjeta”
+ * - La info (rol/palabra) está debajo.
+ * - Una “cortina” tapa la tarjeta y al deslizar hacia arriba se levanta (revela progresivamente).
+ * - Mientras el dedo está puesto y se destapa: visible.
+ * - Al soltar: se vuelve a tapar y se oculta.
+ */
 function RevealPanel({
   playerName,
   isImpostor,
@@ -601,61 +657,58 @@ function RevealPanel({
   onShow: () => void;
   onHide: () => void;
 }) {
-  // Umbral de “arrastre hacia arriba” para revelar
-  const REVEAL_THRESHOLD_PX = 35;
+  const COVER_MAX_PX = 220;          // cuánto “tapa” la cortina (altura)
+  const START_SHOW_PX = 6;           // a partir de este arrastre, activamos shield/estado shown
+  const HAPTIC_TRIGGER_PX = 45;      // vibración al “pasar” un umbral (sensación de desbloqueo)
 
   const [holding, setHolding] = useState(false);
   const [startY, setStartY] = useState<number | null>(null);
-  const [dragDy, setDragDy] = useState(0);
+  const [dy, setDy] = useState(0); // arrastre hacia arriba (positivo)
   const [vibrated, setVibrated] = useState(false);
 
-  function resetGesture() {
-    setHolding(false);
-    setStartY(null);
-    setDragDy(0);
-    setVibrated(false);
-  }
-
   function tryVibrate() {
-    // Vibración corta (si existe)
     if (typeof navigator !== "undefined" && "vibrate" in navigator) {
       // @ts-ignore
       navigator.vibrate(12);
     }
   }
 
+  function resetGesture() {
+    setHolding(false);
+    setStartY(null);
+    setDy(0);
+    setVibrated(false);
+  }
+
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
     (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
     setHolding(true);
     setStartY(e.clientY);
-    setDragDy(0);
+    setDy(0);
     setVibrated(false);
   }
 
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
     if (!holding || startY === null) return;
 
-    // Arrastrar hacia arriba => dy positivo
-    const dy = startY - e.clientY;
-    const clamped = Math.max(0, Math.min(90, dy));
-    setDragDy(clamped);
+    const raw = startY - e.clientY; // hacia arriba => positivo
+    const nextDy = clamp(raw, 0, COVER_MAX_PX);
+    setDy(nextDy);
 
-    // Revelar si supera umbral
-    if (dy >= REVEAL_THRESHOLD_PX) {
-      if (!shown) onShow();
-      if (!vibrated) {
-        tryVibrate();
-        setVibrated(true);
-      }
-    } else {
-      // Si vuelve por debajo del umbral mientras mantiene, ocultamos
-      if (shown) onHide();
-      setVibrated(false);
+    // Cuando empieza a destapar, activamos modo “shown” para shield y bloqueo de navegación
+    if (nextDy >= START_SHOW_PX && !shown) onShow();
+    if (nextDy < START_SHOW_PX && shown) onHide();
+
+    // Vibración al pasar umbral “unlock”
+    if (nextDy >= HAPTIC_TRIGGER_PX && !vibrated) {
+      tryVibrate();
+      setVibrated(true);
     }
+    if (nextDy < HAPTIC_TRIGGER_PX) setVibrated(false);
   }
 
   function handlePointerUp() {
-    // Al soltar SIEMPRE se oculta
+    // Al soltar: tapar siempre
     onHide();
     resetGesture();
   }
@@ -664,6 +717,10 @@ function RevealPanel({
     onHide();
     resetGesture();
   }
+
+  // Cortina: altura visible = COVER_MAX_PX - dy
+  const coverHeight = Math.max(0, COVER_MAX_PX - dy);
+  const progress = Math.min(1, dy / COVER_MAX_PX);
 
   return (
     <div
@@ -674,50 +731,70 @@ function RevealPanel({
       onPointerCancel={handlePointerCancel}
     >
       <div className="flex items-center justify-between">
-        <div className="font-semibold">Desliza hacia arriba y mantén</div>
-        <Badge variant="secondary">{shown ? "MOSTRANDO" : "OCULTO"}</Badge>
+        <div className="font-semibold">Desliza para destapar</div>
+        <Badge variant="secondary">{shown ? "DESTAPANDO" : "TAPADO"}</Badge>
       </div>
 
-      <div className="rounded-2xl bg-black/5 p-3">
-        {!shown ? (
-          <div className="grid gap-1">
-            <div className="text-sm text-black/70">
-              Pon el dedo aquí, <span className="font-medium">desliza hacia arriba</span> y{" "}
-              <span className="font-medium">mantén</span> para ver tu rol.
-            </div>
-            <div className="text-xs text-black/50">Al soltar, se oculta automáticamente.</div>
+      <div className="text-xs text-black/60">
+        Mantén el dedo y desliza hacia arriba para revelar. Al soltar, se oculta.
+      </div>
 
-            <div className="mt-2 h-2 rounded-full bg-black/10 overflow-hidden">
-              <div
-                className="h-full bg-black/40"
-                style={{ width: `${Math.min(100, (dragDy / REVEAL_THRESHOLD_PX) * 100)}%` }}
-              />
-            </div>
+      <div className="relative rounded-2xl border border-black/10 overflow-hidden bg-white">
+        {/* Contenido real debajo (rol/palabra) */}
+        <div className="p-4 grid gap-2">
+          <div className="flex items-center gap-2">
+            <Badge variant={isImpostor ? "destructive" : "default"}>
+              {isImpostor ? "IMPOSTOR" : "TRIPULANTE"}
+            </Badge>
+            <div className="text-xs text-black/60">{playerName}</div>
           </div>
-        ) : (
-          <div className="grid gap-2">
-            <div className="flex items-center gap-2">
-              <Badge variant={isImpostor ? "destructive" : "default"}>{isImpostor ? "IMPOSTOR" : "TRIPULANTE"}</Badge>
-              <div className="text-xs text-black/60">{playerName}</div>
-            </div>
 
-            <div className="rounded-2xl bg-white border border-black/10 p-4">
-              {isImpostor ? (
-                <div className="grid gap-2">
-                  <div className="text-sm">No conoces la palabra.</div>
-                  {showHint && impostorHintText ? <div className="text-sm font-medium">{impostorHintText}</div> : null}
-                </div>
-              ) : (
-                <div className="grid gap-1">
-                  <div className="text-xs text-black/60">La palabra es</div>
-                  <div className="text-2xl font-semibold">{secretWord}</div>
-                </div>
-              )}
-            </div>
-
-            <div className="text-xs text-black/50">Mantén pulsado para seguir viendo. Suelta para ocultar.</div>
+          <div className="rounded-2xl bg-black/5 p-4">
+            {isImpostor ? (
+              <div className="grid gap-2">
+                <div className="text-sm">No conoces la palabra.</div>
+                {showHint && impostorHintText ? (
+                  <div className="text-sm font-medium">{impostorHintText}</div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="grid gap-1">
+                <div className="text-xs text-black/60">La palabra es</div>
+                <div className="text-2xl font-semibold">{secretWord}</div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
+
+        {/* CORTINA (lo que “tapa”) */}
+        <div
+          className="absolute inset-x-0 top-0 bg-white"
+          style={{
+            height: `${coverHeight}px`,
+            transition: holding ? "none" : "height 120ms ease-out",
+          }}
+        >
+          {/* Cabecera visual de la cortina */}
+          <div className="h-full w-full bg-white">
+            <div className="p-4">
+              <div className="text-sm font-semibold">Tarjeta tapada</div>
+              <div className="text-xs text-black/60 mt-1">
+                Desliza hacia arriba para destapar el rol
+              </div>
+
+              <div className="mt-3 h-2 rounded-full bg-black/10 overflow-hidden">
+                <div className="h-full bg-black/40" style={{ width: `${Math.round(progress * 100)}%` }} />
+              </div>
+
+              <div className="mt-3 text-xs text-black/50">
+                Progreso: {Math.round(progress * 100)}%
+              </div>
+            </div>
+
+            {/* “Asa” tipo notch para que parezca que se puede levantar */}
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-14 h-1.5 rounded-full bg-black/20" />
+          </div>
+        </div>
       </div>
     </div>
   );
