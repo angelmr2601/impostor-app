@@ -19,6 +19,19 @@ function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
 }
 
+function uniqueCaseInsensitive(list: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const s of list) {
+    const key = s.trim().toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s.trim());
+  }
+  return out;
+}
+
 const PHASES = {
   SETUP: "setup",
   REVEAL: "reveal",
@@ -74,7 +87,7 @@ function pickRandom<T>(arr: T[]) {
 
 function chooseSecretFromLocal(selectedCategoryList: string[], usedWords: string[]): Secret {
   const used = new Set((usedWords || []).map((w) => String(w).toLowerCase()));
-  const categories = selectedCategoryList.filter((c) => WORD_BANK[c]);
+  const categories = selectedCategoryList.filter((c) => WORD_BANK[c]); // solo categorías locales
   const all: Secret[] = categories.flatMap((c) =>
     WORD_BANK[c].map((it) => ({ category: c, word: it.w, hints: it.hints || [] }))
   );
@@ -110,6 +123,36 @@ function pushUsedWord(word: string) {
   }
 }
 
+function loadDynamicCategories(): string[] {
+  try {
+    const raw = localStorage.getItem("dynamicCategories");
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return uniqueCaseInsensitive(parsed.map((x) => String(x)));
+  } catch {
+    return [];
+  }
+}
+
+function saveDynamicCategories(list: string[]) {
+  try {
+    localStorage.setItem("dynamicCategories", JSON.stringify(uniqueCaseInsensitive(list)));
+  } catch {
+    // ignore
+  }
+}
+
+function normalizeCategoryInput(s: string) {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+function isValidCategoryName(s: string) {
+  const name = normalizeCategoryInput(s);
+  if (name.length < 3 || name.length > 40) return false;
+  // permitimos letras, números, espacios y algunos signos comunes
+  return /^[\p{L}\p{N} áéíóúüñÁÉÍÓÚÜÑ'’\-]+$/u.test(name);
+}
+
 export default function ImpostorPalabraMobile() {
   const [phase, setPhase] = useState<Phase>(PHASES.SETUP);
 
@@ -117,12 +160,43 @@ export default function ImpostorPalabraMobile() {
   const [players, setPlayers] = useState<{ id: string; name: string }[]>([{ id: uid(), name: "" }]);
   const [impostorCount, setImpostorCount] = useState(1);
 
-  const categoryNames = useMemo(() => Object.keys(WORD_BANK), []);
+  // Categorías dinámicas (persistentes)
+  const [dynamicCategories, setDynamicCategories] = useState<string[]>([]);
+  const [newCategory, setNewCategory] = useState("");
+
+  // Cargamos dinámicas desde localStorage al montar
+  useEffect(() => {
+    setDynamicCategories(loadDynamicCategories());
+  }, []);
+
+  // Guardamos dinámicas si cambian
+  useEffect(() => {
+    saveDynamicCategories(dynamicCategories);
+  }, [dynamicCategories]);
+
+  const baseCategoryNames = useMemo(() => Object.keys(WORD_BANK), []);
+
+  const categoryNames = useMemo(() => {
+    return uniqueCaseInsensitive([...baseCategoryNames, ...dynamicCategories]);
+  }, [baseCategoryNames, dynamicCategories]);
+
   const [selectedCategories, setSelectedCategories] = useState<Record<string, boolean>>(() => {
+    // solo base al inicio; dinámicas se inyectan luego con useEffect
     const init: Record<string, boolean> = {};
     for (const c of Object.keys(WORD_BANK)) init[c] = true;
     return init;
   });
+
+  // Asegurar que cada categoría dinámica tenga estado seleccionable (por defecto true)
+  useEffect(() => {
+    setSelectedCategories((prev) => {
+      const next = { ...prev };
+      for (const c of dynamicCategories) {
+        if (next[c] === undefined) next[c] = true;
+      }
+      return next;
+    });
+  }, [dynamicCategories]);
 
   // Hint
   const [giveImpostorHint, setGiveImpostorHint] = useState(true);
@@ -136,7 +210,7 @@ export default function ImpostorPalabraMobile() {
   // Reveal
   const [revealIndex, setRevealIndex] = useState(0);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
-  const [revealShown, setRevealShown] = useState(false); // “algo visible / destapando”
+  const [revealShown, setRevealShown] = useState(false); // “destapando/viendo”
   const [pendingNav, setPendingNav] = useState(0); // -1 | +1
 
   // Vote
@@ -152,7 +226,7 @@ export default function ImpostorPalabraMobile() {
     [categoryNames, selectedCategories]
   );
 
-  // ✅ Selector impostores: depende de inputs, no de nombres rellenados
+  // Selector impostores: depende de inputs, no de nombres rellenados
   const playersCount = players.length;
   const maxImpostors = Math.max(1, playersCount - 1);
 
@@ -165,11 +239,14 @@ export default function ImpostorPalabraMobile() {
     [players]
   );
 
+  // Al menos 1 categoría seleccionada
+  const hasAnyCategory = selectedCategoryList.length >= 1;
+
   const canStart =
     validPlayers.length >= 3 &&
     impostorCount >= 1 &&
     impostorCount < validPlayers.length &&
-    selectedCategoryList.length >= 1 &&
+    hasAnyCategory &&
     !starting;
 
   // Cambiar de jugador => tapado
@@ -177,7 +254,7 @@ export default function ImpostorPalabraMobile() {
     setRevealShown(false);
   }, [revealIndex]);
 
-  // Navegación 1 toque: si se está “destapando/mostrando”, ocultamos y luego navegamos
+  // Navegación 1 toque: si se está destapando, ocultamos y luego navegamos
   useEffect(() => {
     if (pendingNav === 0) return;
     if (revealShown) return;
@@ -222,18 +299,30 @@ export default function ImpostorPalabraMobile() {
     const impostors = shuffled.slice(0, impostorCount).map((p) => p.id);
 
     // Palabra (API -> fallback local)
-    let picked: Secret;
     const usedWords = typeof window !== "undefined" ? (getUsedWords() as string[]) : [];
+
+    // Categorías locales seleccionadas (las que tienen pool)
+    const selectedLocalCategories = selectedCategoryList.filter((c) => !!WORD_BANK[c]);
+
+    let picked: Secret | null = null;
 
     try {
       picked = await fetchSecretFromApi(selectedCategoryList, usedWords);
     } catch {
-      picked = chooseSecretFromLocal(selectedCategoryList, usedWords);
+      // Fallback local SOLO si hay categorías locales seleccionadas
+      if (selectedLocalCategories.length === 0) {
+        setStarting(false);
+        setStartError(
+          "La IA falló y no hay pool local para las categorías seleccionadas (solo temporales).\nSelecciona alguna categoría local (ej: Lugares/Comida) o revisa la API key."
+        );
+        return;
+      }
+      picked = chooseSecretFromLocal(selectedLocalCategories, usedWords);
       setStartError("No se pudo usar IA (usando pool local). Revisa /api/word y la API key.");
     }
 
     // Pista estable para TODOS los impostores
-    const hint = giveImpostorHint ? buildImpostorHintOnce(picked, hintStyle) : "";
+    const hint = giveImpostorHint ? buildImpostorHintOnce(picked!, hintStyle) : "";
 
     setImpostorIds(impostors);
     setSecret(picked);
@@ -316,14 +405,11 @@ export default function ImpostorPalabraMobile() {
                   <CardTitle className="text-base">Configurar</CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-4">
+                  {/* Jugadores */}
                   <div className="grid gap-2">
                     <div className="flex items-center justify-between">
                       <Label>Jugadores</Label>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setPlayers((ps) => [...ps, { id: uid(), name: "" }])}
-                      >
+                      <Button variant="outline" size="sm" onClick={() => setPlayers((ps) => [...ps, { id: uid(), name: "" }])}>
                         +
                       </Button>
                     </div>
@@ -355,29 +441,114 @@ export default function ImpostorPalabraMobile() {
 
                   <Separator />
 
+                  {/* Añadir categoría temporal */}
                   <div className="grid gap-2">
-                    <Label>Categorías</Label>
-                    <div className="flex flex-wrap gap-2">
-                      {categoryNames.map((c) => {
-                        const on = !!selectedCategories[c];
-                        return (
-                          <Button
-                            key={c}
-                            variant={on ? "default" : "outline"}
-                            onClick={() => setSelectedCategories((s) => ({ ...s, [c]: !s[c] }))}
-                          >
-                            {c}
-                          </Button>
-                        );
-                      })}
+                    <Label>Añadir categoría temporal</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder='Ej: "estadios de fútbol"'
+                        value={newCategory}
+                        onChange={(e) => setNewCategory(e.target.value)}
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          const name = normalizeCategoryInput(newCategory);
+                          if (!isValidCategoryName(name)) {
+                            setStartError(
+                              "Nombre de categoría inválido.\nUsa 3–40 caracteres (letras/números/espacios) como: 'estadios de fútbol'."
+                            );
+                            return;
+                          }
+                          setDynamicCategories((list) => uniqueCaseInsensitive([...list, name]));
+                          // por defecto seleccionada
+                          setSelectedCategories((s) => ({ ...s, [name]: true }));
+                          setNewCategory("");
+                        }}
+                      >
+                        Añadir
+                      </Button>
                     </div>
-                    {selectedCategoryList.length === 0 && (
-                      <div className="text-xs text-black/60">Selecciona al menos 1.</div>
+                    <div className="text-xs text-black/60">
+                      Se guarda en este dispositivo. Puedes borrarla cuando quieras.
+                    </div>
+
+                    {dynamicCategories.length > 0 && (
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-black/60">Temporales guardadas: {dynamicCategories.length}</div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setDynamicCategories([]);
+                            setSelectedCategories((s) => {
+                              const next = { ...s };
+                              for (const c of dynamicCategories) delete next[c];
+                              return next;
+                            });
+                          }}
+                        >
+                          Limpiar temporales
+                        </Button>
+                      </div>
                     )}
                   </div>
 
                   <Separator />
 
+                  {/* Categorías */}
+                  <div className="grid gap-2">
+                    <Label>Categorías</Label>
+
+                    <div className="flex flex-wrap gap-2">
+                      {categoryNames.map((c) => {
+                        const on = !!selectedCategories[c];
+                        const isDynamic = dynamicCategories.some((d) => d.toLowerCase() === c.toLowerCase());
+
+                        return (
+                          <button
+                            key={c}
+                            className={[
+                              "inline-flex items-center gap-2 rounded-2xl px-3 h-10 text-sm border transition-colors",
+                              on ? "bg-black text-white border-black" : "bg-white text-black border-black/20 hover:bg-black/5",
+                            ].join(" ")}
+                            onClick={() => setSelectedCategories((s) => ({ ...s, [c]: !s[c] }))}
+                            type="button"
+                          >
+                            <span>{c}</span>
+                            {isDynamic && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/15 border border-white/20">
+                                TEMP
+                              </span>
+                            )}
+                            {isDynamic && (
+                              <span
+                                className="ml-1 text-xs opacity-80 hover:opacity-100"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDynamicCategories((d) => d.filter((x) => x.toLowerCase() !== c.toLowerCase()));
+                                  setSelectedCategories((s) => {
+                                    const next = { ...s };
+                                    delete next[c];
+                                    return next;
+                                  });
+                                }}
+                                title="Eliminar categoría"
+                              >
+                                ✕
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {selectedCategoryList.length === 0 && <div className="text-xs text-black/60">Selecciona al menos 1.</div>}
+                  </div>
+
+                  <Separator />
+
+                  {/* Impostores */}
                   <div className="grid gap-2">
                     <Label>Impostores</Label>
                     <div className="flex items-center gap-2">
@@ -394,6 +565,7 @@ export default function ImpostorPalabraMobile() {
 
                   <Separator />
 
+                  {/* Pista */}
                   <div className="grid gap-2">
                     <div className="flex items-center justify-between">
                       <div className="grid gap-1">
@@ -405,16 +577,10 @@ export default function ImpostorPalabraMobile() {
 
                     {giveImpostorHint && (
                       <div className="flex flex-wrap gap-2">
-                        <Button
-                          variant={hintStyle === "random_hint" ? "default" : "outline"}
-                          onClick={() => setHintStyle("random_hint")}
-                        >
+                        <Button variant={hintStyle === "random_hint" ? "default" : "outline"} onClick={() => setHintStyle("random_hint")}>
                           Relacionada
                         </Button>
-                        <Button
-                          variant={hintStyle === "category" ? "default" : "outline"}
-                          onClick={() => setHintStyle("category")}
-                        >
+                        <Button variant={hintStyle === "category" ? "default" : "outline"} onClick={() => setHintStyle("category")}>
                           Categoría
                         </Button>
                         <Button
@@ -475,7 +641,7 @@ export default function ImpostorPalabraMobile() {
 
                     return (
                       <div className="relative">
-                        {/* Privacy shield: oscurece todo el viewport mientras se destapa/ve */}
+                        {/* Privacy shield */}
                         {revealShown && (
                           <div className="fixed inset-0 z-40 pointer-events-none">
                             <div className="absolute inset-0 bg-black/70" />
@@ -492,7 +658,6 @@ export default function ImpostorPalabraMobile() {
                             showHint={giveImpostorHint}
                             shown={revealShown}
                             onShow={() => {
-                              // al empezar a destapar, marcamos y activamos shield
                               markRevealed(p.id);
                               setRevealShown(true);
                             }}
@@ -504,12 +669,7 @@ export default function ImpostorPalabraMobile() {
                   })()}
 
                   <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      className="flex-1"
-                      onClick={() => nextReveal(-1)}
-                      disabled={revealIndex === 0}
-                    >
+                    <Button variant="outline" className="flex-1" onClick={() => nextReveal(-1)} disabled={revealIndex === 0}>
                       Anterior
                     </Button>
                     <Button
@@ -526,9 +686,7 @@ export default function ImpostorPalabraMobile() {
                     <Vote className="w-4 h-4" /> Empezar votación
                   </Button>
 
-                  {!revealDone() && (
-                    <div className="text-xs text-black/60">Todos deben ver su pantalla antes de votar.</div>
-                  )}
+                  {!revealDone() && <div className="text-xs text-black/60">Todos deben ver su pantalla antes de votar.</div>}
                 </CardContent>
               </Card>
             </motion.div>
@@ -633,10 +791,10 @@ export default function ImpostorPalabraMobile() {
 
 /**
  * RevealPanel “destapar tarjeta”
- * - La info (rol/palabra) está debajo.
- * - Una “cortina” tapa la tarjeta y al deslizar hacia arriba se levanta (revela progresivamente).
- * - Mientras el dedo está puesto y se destapa: visible.
- * - Al soltar: se vuelve a tapar y se oculta.
+ * - Rol/palabra debajo
+ * - Cortina tapa arriba con overflow-hidden (sin solapes)
+ * - Al deslizar hacia arriba: se destapa progresivo
+ * - Al soltar: se tapa
  */
 function RevealPanel({
   playerName,
@@ -657,13 +815,13 @@ function RevealPanel({
   onShow: () => void;
   onHide: () => void;
 }) {
-  const COVER_MAX_PX = 220;          // cuánto “tapa” la cortina (altura)
-  const START_SHOW_PX = 6;           // a partir de este arrastre, activamos shield/estado shown
-  const HAPTIC_TRIGGER_PX = 45;      // vibración al “pasar” un umbral (sensación de desbloqueo)
+  const COVER_MAX_PX = 220;
+  const START_SHOW_PX = 6;
+  const HAPTIC_TRIGGER_PX = 45;
 
   const [holding, setHolding] = useState(false);
   const [startY, setStartY] = useState<number | null>(null);
-  const [dy, setDy] = useState(0); // arrastre hacia arriba (positivo)
+  const [dy, setDy] = useState(0);
   const [vibrated, setVibrated] = useState(false);
 
   function tryVibrate() {
@@ -691,15 +849,13 @@ function RevealPanel({
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
     if (!holding || startY === null) return;
 
-    const raw = startY - e.clientY; // hacia arriba => positivo
+    const raw = startY - e.clientY; // arriba => positivo
     const nextDy = clamp(raw, 0, COVER_MAX_PX);
     setDy(nextDy);
 
-    // Cuando empieza a destapar, activamos modo “shown” para shield y bloqueo de navegación
     if (nextDy >= START_SHOW_PX && !shown) onShow();
     if (nextDy < START_SHOW_PX && shown) onHide();
 
-    // Vibración al pasar umbral “unlock”
     if (nextDy >= HAPTIC_TRIGGER_PX && !vibrated) {
       tryVibrate();
       setVibrated(true);
@@ -708,7 +864,6 @@ function RevealPanel({
   }
 
   function handlePointerUp() {
-    // Al soltar: tapar siempre
     onHide();
     resetGesture();
   }
@@ -718,7 +873,6 @@ function RevealPanel({
     resetGesture();
   }
 
-  // Cortina: altura visible = COVER_MAX_PX - dy
   const coverHeight = Math.max(0, COVER_MAX_PX - dy);
   const progress = Math.min(1, dy / COVER_MAX_PX);
 
@@ -735,17 +889,13 @@ function RevealPanel({
         <Badge variant="secondary">{shown ? "DESTAPANDO" : "TAPADO"}</Badge>
       </div>
 
-      <div className="text-xs text-black/60">
-        Mantén el dedo y desliza hacia arriba para revelar. Al soltar, se oculta.
-      </div>
+      <div className="text-xs text-black/60">Mantén el dedo y desliza hacia arriba. Al soltar, se oculta.</div>
 
       <div className="relative rounded-2xl border border-black/10 overflow-hidden bg-white">
-        {/* Contenido real debajo (rol/palabra) */}
+        {/* Contenido real debajo */}
         <div className="relative z-10 p-4 grid gap-2">
           <div className="flex items-center gap-2">
-            <Badge variant={isImpostor ? "destructive" : "default"}>
-              {isImpostor ? "IMPOSTOR" : "TRIPULANTE"}
-            </Badge>
+            <Badge variant={isImpostor ? "destructive" : "default"}>{isImpostor ? "IMPOSTOR" : "TRIPULANTE"}</Badge>
             <div className="text-xs text-black/60">{playerName}</div>
           </div>
 
@@ -753,9 +903,7 @@ function RevealPanel({
             {isImpostor ? (
               <div className="grid gap-2">
                 <div className="text-sm">No conoces la palabra.</div>
-                {showHint && impostorHintText ? (
-                  <div className="text-sm font-medium">{impostorHintText}</div>
-                ) : null}
+                {showHint && impostorHintText ? <div className="text-sm font-medium">{impostorHintText}</div> : null}
               </div>
             ) : (
               <div className="grid gap-1">
@@ -766,34 +914,30 @@ function RevealPanel({
           </div>
         </div>
 
-        {/* CORTINA (lo que “tapa”) */}
+        {/* Cortina tapa (overflow-hidden para que NO se solapen textos) */}
         <div
-  className="absolute inset-x-0 top-0 bg-white overflow-hidden z-20"
-  style={{
-    height: `${coverHeight}px`,
-    transition: holding ? "none" : "height 120ms ease-out",
-  }}
->
-          {/* Cabecera visual de la cortina */}
-          <div className="h-full w-full bg-white">
+          className="absolute inset-x-0 top-0 bg-white overflow-hidden z-20"
+          style={{
+            height: `${coverHeight}px`,
+            transition: holding ? "none" : "height 120ms ease-out",
+          }}
+        >
+          {/* Solo mostramos texto si hay altura suficiente */}
+          {coverHeight > 72 && (
             <div className="p-4">
               <div className="text-sm font-semibold">Tarjeta tapada</div>
-              <div className="text-xs text-black/60 mt-1">
-                Desliza hacia arriba para destapar el rol
-              </div>
+              <div className="text-xs text-black/60 mt-1">Desliza hacia arriba para revelar</div>
 
               <div className="mt-3 h-2 rounded-full bg-black/10 overflow-hidden">
                 <div className="h-full bg-black/40" style={{ width: `${Math.round(progress * 100)}%` }} />
               </div>
 
-              <div className="mt-3 text-xs text-black/50">
-                Progreso: {Math.round(progress * 100)}%
-              </div>
+              <div className="mt-3 text-xs text-black/50">Progreso: {Math.round(progress * 100)}%</div>
             </div>
+          )}
 
-            {/* “Asa” tipo notch para que parezca que se puede levantar */}
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-14 h-1.5 rounded-full bg-black/20" />
-          </div>
+          {/* Asa */}
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-14 h-1.5 rounded-full bg-black/20" />
         </div>
       </div>
     </div>

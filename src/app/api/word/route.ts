@@ -21,7 +21,15 @@ function tokens(word: string) {
 function hintLeaksWord(word: string, hint: string) {
   const wTok = tokens(word);
   const h = normalize(hint);
-  return wTok.some((t) => t.length >= 4 && h.includes(t)); // bloquea tokens largos
+  return wTok.some((t) => t.length >= 4 && h.includes(t));
+}
+
+function sanitizeCategory(c: string) {
+  const s = String(c).replace(/\s+/g, " ").trim();
+  // 3–40 chars, letras/números/espacios y algunos signos habituales
+  if (s.length < 3 || s.length > 40) return null;
+  if (!/^[\p{L}\p{N} áéíóúüñÁÉÍÓÚÜÑ'’\-]+$/u.test(s)) return null;
+  return s;
 }
 
 function hardValidate(payload: any, selectedCategories: string[], usedWords: string[]) {
@@ -50,23 +58,24 @@ function hardValidate(payload: any, selectedCategories: string[], usedWords: str
 async function moderate(text: string) {
   const r = await client.moderations.create({
     model: "omni-moderation-latest",
-    input: text
+    input: text,
   });
   return { flagged: !!r.results?.[0]?.flagged };
 }
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const categories: string[] = Array.isArray(body.categories) ? body.categories : [];
+  const categoriesRaw: unknown = body.categories;
   const difficulty: "easy" | "normal" | "hard" = body.difficulty || "easy";
   const usedWords: string[] = Array.isArray(body.usedWords) ? body.usedWords : [];
 
-  const selected = categories.map((c) => String(c).trim()).filter(Boolean);
+  const categories = Array.isArray(categoriesRaw) ? categoriesRaw.map((c) => sanitizeCategory(String(c))) : [];
+  const selected = categories.filter(Boolean) as string[];
+
   if (!selected.length) {
     return Response.json({ error: "No categories selected" }, { status: 400 });
   }
 
-  // JSON Schema estricto (Structured Outputs)
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -75,9 +84,9 @@ export async function POST(req: Request) {
       category: { type: "string", enum: selected },
       word: { type: "string" },
       difficulty: { type: "string", enum: ["easy", "normal", "hard"] },
-      hints: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 3 }
+      hints: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 3 },
     },
-    required: ["language", "category", "word", "difficulty", "hints"]
+    required: ["language", "category", "word", "difficulty", "hints"],
   } as const;
 
   let lastErrs: string[] = [];
@@ -87,13 +96,16 @@ export async function POST(req: Request) {
       "Genera una palabra para un juego social tipo 'impostor'.",
       "Idioma: español.",
       `Categorías permitidas: ${selected.join(", ")}.`,
+      "Regla MUY IMPORTANTE: si una categoría es una frase (ej: 'estadios de fútbol'), genera SOLO ENTIDADES específicas de esa categoría (nombres propios reales).",
+"No generes cosas relacionadas ni genéricas (ej: NO 'grada', NO 'césped', NO 'portería', NO 'afición').",
+"La 'word' debe ser el nombre de la entidad (ej: 'Camp Nou', 'Santiago Bernabéu', 'Old Trafford').",
       `Dificultad: ${difficulty}.`,
       "La palabra debe ser común, concreta y apta para todas las edades.",
       "Se permiten 1 a 3 palabras (máx 2 espacios).",
       `NO repitas palabras usadas: ${usedWords.slice(-50).join(", ") || "(ninguna)"}.`,
       "Devuelve EXACTAMENTE 3 pistas relacionadas.",
       "Las pistas NO deben incluir ninguna parte de la palabra (ni tokens largos).",
-      lastErrs.length ? `Corrige estos errores previos: ${lastErrs.join(", ")}.` : ""
+      lastErrs.length ? `Corrige estos errores previos: ${lastErrs.join(", ")}.` : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -107,9 +119,9 @@ export async function POST(req: Request) {
           type: "json_schema",
           name: "word_pick",
           strict: true,
-          schema
-        }
-      }
+          schema,
+        },
+      },
     });
 
     const raw = resp.output_text?.trim() || "";
