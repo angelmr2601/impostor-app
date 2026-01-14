@@ -741,7 +741,7 @@ function RevealPanel({
 
       <div className="relative rounded-2xl border border-black/10 overflow-hidden bg-white">
         {/* Contenido real debajo (rol/palabra) */}
-        <div className="p-4 grid gap-2">
+        <div className="relative z-10 p-4 grid gap-2">
           <div className="flex items-center gap-2">
             <Badge variant={isImpostor ? "destructive" : "default"}>
               {isImpostor ? "IMPOSTOR" : "TRIPULANTE"}
@@ -768,12 +768,12 @@ function RevealPanel({
 
         {/* CORTINA (lo que “tapa”) */}
         <div
-          className="absolute inset-x-0 top-0 bg-white"
-          style={{
-            height: `${coverHeight}px`,
-            transition: holding ? "none" : "height 120ms ease-out",
-          }}
-        >
+  className="absolute inset-x-0 top-0 bg-white overflow-hidden z-20"
+  style={{
+    height: `${coverHeight}px`,
+    transition: holding ? "none" : "height 120ms ease-out",
+  }}
+>
           {/* Cabecera visual de la cortina */}
           <div className="h-full w-full bg-white">
             <div className="p-4">
