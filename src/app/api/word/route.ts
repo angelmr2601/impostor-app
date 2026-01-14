@@ -2,12 +2,15 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+type Secret = {
+  language: "es";
+  category: string;
+  word: string;
+  difficulty: "easy" | "normal" | "hard";
+  hints: string[];
+};
 
-// 1 a 3 palabras (máx 2 espacios)
 const WORD_RE = /^[a-záéíóúüñ]+(?: [a-záéíóúüñ]+){0,2}$/i;
-
-// Nombre propio (Camp Nou, Santiago Bernabéu, Old Trafford)
 const ENTITY_NAME_RE =
   /^[A-ZÁÉÍÓÚÜÑ][\p{L}\p{N}'’\-]+(?: [A-ZÁÉÍÓÚÜÑ][\p{L}\p{N}'’\-]+){0,3}$/u;
 
@@ -35,10 +38,6 @@ function sanitizeCategory(c: string) {
   return s;
 }
 
-/**
- * Categorías que SOLO admiten entidades reales
- * (por ahora: estadios)
- */
 function isEntitiesOnlyCategory(category: string) {
   const c = normalize(category);
   return c.includes("estadio") || c.includes("estadios");
@@ -57,7 +56,6 @@ function hardValidate(payload: any, selectedCategories: string[], usedWords: str
   const used = new Set((usedWords || []).map((w) => normalize(String(w))));
   if (used.has(normalize(word))) errs.push("word_repeated");
 
-  // Validación extra para categorías SOLO entidades
   if (isEntitiesOnlyCategory(category)) {
     if (!ENTITY_NAME_RE.test(word)) errs.push("entity_name_required");
   }
@@ -72,7 +70,38 @@ function hardValidate(payload: any, selectedCategories: string[], usedWords: str
   return { ok: errs.length === 0, errs };
 }
 
-async function moderate(text: string) {
+async function verifyFootballStadium(client: OpenAI, word: string) {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { ok: { type: "boolean" }, reason: { type: "string" } },
+    required: ["ok", "reason"],
+  } as const;
+
+  const prompt = [
+    "Responde SOLO con JSON.",
+    "Pregunta: ¿La siguiente palabra es el nombre real de un estadio de fútbol?",
+    "Si no es un estadio (animal, comida, objeto, concepto, lugar genérico), ok=false.",
+    `Palabra: "${word}"`,
+  ].join("\n");
+
+  try {
+    const resp = await client.responses.create({
+      model: "gpt-5-mini",
+      input: prompt,
+      store: false,
+      text: { format: { type: "json_schema", name: "stadium_check", strict: true, schema } },
+    });
+
+    const raw = resp.output_text?.trim() || "";
+    const parsed = JSON.parse(raw) as { ok: boolean; reason: string };
+    return parsed.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+async function moderate(client: OpenAI, text: string) {
   const r = await client.moderations.create({
     model: "omni-moderation-latest",
     input: text,
@@ -80,153 +109,118 @@ async function moderate(text: string) {
   return { flagged: !!r.results?.[0]?.flagged };
 }
 
-/**
- * ✅ Verificador semántico
- * Comprueba si la palabra ES REALMENTE un estadio de fútbol
- */
-async function verifyFootballStadium(word: string) {
-  const schema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      ok: { type: "boolean" },
-      reason: { type: "string" },
-    },
-    required: ["ok", "reason"],
-  } as const;
-
-  const prompt = [
-    "Responde SOLO con JSON.",
-    "Pregunta: ¿La siguiente palabra es el nombre real de un estadio de fútbol?",
-    "Si no es un estadio (animal, comida, objeto, concepto, lugar genérico), responde ok=false.",
-    `Palabra: "${word}"`,
-  ].join("\n");
-
-  const resp = await client.responses.create({
-    model: "gpt-5-mini",
-    input: prompt,
-    store: false,
-    text: {
-      format: {
-        type: "json_schema",
-        name: "stadium_check",
-        strict: true,
-        schema,
-      },
-    },
-  });
-
-  try {
-    const parsed = JSON.parse(resp.output_text || "");
-    return parsed.ok === true;
-  } catch {
-    return false; // si falla, ser estrictos
-  }
-}
-
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({}));
-  const categoriesRaw = body.categories;
-  const difficulty: "easy" | "normal" | "hard" = body.difficulty || "easy";
-  const usedWords: string[] = Array.isArray(body.usedWords) ? body.usedWords : [];
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return Response.json(
+        { error: "Missing OPENAI_API_KEY. Add it to .env.local (local) or Vercel Env Vars and redeploy." },
+        { status: 500 }
+      );
+    }
 
-  const categories = Array.isArray(categoriesRaw)
-    ? categoriesRaw.map((c: any) => sanitizeCategory(String(c)))
-    : [];
-  const selected = categories.filter(Boolean) as string[];
+    const client = new OpenAI({ apiKey });
 
-  if (!selected.length) {
-    return Response.json({ error: "No categories selected" }, { status: 400 });
-  }
+    const body = await req.json().catch(() => ({}));
+    const categoriesRaw = body.categories;
+    const difficulty: "easy" | "normal" | "hard" = body.difficulty || "easy";
+    const usedWords: string[] = Array.isArray(body.usedWords) ? body.usedWords : [];
 
-  const schema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      language: { type: "string", enum: ["es"] },
-      category: { type: "string", enum: selected },
-      word: { type: "string" },
-      difficulty: { type: "string", enum: ["easy", "normal", "hard"] },
-      hints: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 3 },
-    },
-    required: ["language", "category", "word", "difficulty", "hints"],
-  } as const;
+    const categories = Array.isArray(categoriesRaw)
+      ? categoriesRaw.map((c: any) => sanitizeCategory(String(c)))
+      : [];
+    const selected = categories.filter(Boolean) as string[];
 
-  let lastErrs: string[] = [];
+    if (!selected.length) {
+      return Response.json({ error: "No categories selected" }, { status: 400 });
+    }
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const prompt = [
-      "Genera una palabra para un juego social tipo 'impostor'.",
-      "Idioma: español.",
-      `Categorías permitidas: ${selected.join(", ")}.`,
-      "",
-      "Regla clave: la palabra debe pertenecer ESTRICTAMENTE a la categoría elegida.",
-      "",
-      "REGLA ESPECIAL:",
-      "Si la categoría contiene 'estadio/estadios', la palabra debe ser SOLO el nombre real de un estadio de fútbol.",
-      "Ejemplos válidos: Camp Nou, Santiago Bernabéu, Old Trafford, San Mamés, Wembley.",
-      "Ejemplos NO válidos: animales, comida, objetos, conceptos o partes del estadio.",
-      "",
-      `Dificultad: ${difficulty}.`,
-      "La palabra debe ser apta para todas las edades.",
-      "Se permiten 1 a 3 palabras (máx 2 espacios).",
-      `NO repitas palabras usadas: ${usedWords.slice(-50).join(", ") || "(ninguna)"}.`,
-      "",
-      "Devuelve EXACTAMENTE 3 pistas relacionadas.",
-      "Las pistas NO deben incluir ninguna parte del nombre.",
-      lastErrs.length ? `Corrige estos errores previos: ${lastErrs.join(", ")}.` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const resp = await client.responses.create({
-      model: "gpt-5-mini",
-      input: prompt,
-      store: false,
-      text: {
-        format: {
-          type: "json_schema",
-          name: "word_pick",
-          strict: true,
-          schema,
-        },
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        language: { type: "string", enum: ["es"] },
+        category: { type: "string", enum: selected },
+        word: { type: "string" },
+        difficulty: { type: "string", enum: ["easy", "normal", "hard"] },
+        hints: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 3 },
       },
-    });
+      required: ["language", "category", "word", "difficulty", "hints"],
+    } as const;
 
-    let payload: any;
-    try {
-      payload = JSON.parse(resp.output_text || "");
-    } catch {
-      lastErrs = ["json_parse_failed"];
-      continue;
-    }
+    let lastErrs: string[] = [];
 
-    const hv = hardValidate(payload, selected, usedWords);
-    if (!hv.ok) {
-      lastErrs = hv.errs;
-      continue;
-    }
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const prompt = [
+        "Genera una palabra para un juego social tipo 'impostor'.",
+        "Idioma: español.",
+        `Categorías permitidas: ${selected.join(", ")}.`,
+        "",
+        "Regla clave: la palabra debe pertenecer estrictamente a la categoría elegida.",
+        "",
+        "REGLA ESPECIAL:",
+        "Si la categoría contiene 'estadio/estadios', la palabra debe ser SOLO el nombre real de un estadio de fútbol.",
+        "Ejemplos válidos: Camp Nou, Santiago Bernabéu, Old Trafford, San Mamés, Wembley.",
+        "Ejemplos NO válidos: animales, comida, objetos, conceptos o partes del estadio.",
+        "",
+        `Dificultad: ${difficulty}.`,
+        "Se permiten 1 a 3 palabras (máx 2 espacios).",
+        `NO repitas palabras usadas: ${usedWords.slice(-50).join(", ") || "(ninguna)"}.`,
+        "",
+        "Devuelve EXACTAMENTE 3 pistas relacionadas.",
+        "Las pistas NO deben incluir ninguna parte del nombre.",
+        lastErrs.length ? `Corrige estos errores previos: ${lastErrs.join(", ")}.` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
 
-    // ✅ comprobación semántica FINAL
-    if (isEntitiesOnlyCategory(payload.category)) {
-      const ok = await verifyFootballStadium(payload.word);
-      if (!ok) {
-        lastErrs = ["semantic_check_failed"];
+      let payload: Secret | null = null;
+
+      try {
+        const resp = await client.responses.create({
+          model: "gpt-5-mini",
+          input: prompt,
+          store: false,
+          text: { format: { type: "json_schema", name: "word_pick", strict: true, schema } },
+        });
+
+        payload = JSON.parse(resp.output_text || "") as Secret;
+      } catch (e: any) {
+        lastErrs = ["openai_or_json_failed"];
+        // log real
+        console.error("OpenAI/JSON error:", e?.message || e);
         continue;
       }
+
+      const hv = hardValidate(payload, selected, usedWords);
+      if (!hv.ok) {
+        lastErrs = hv.errs;
+        continue;
+      }
+
+      if (isEntitiesOnlyCategory(payload.category)) {
+        const ok = await verifyFootballStadium(client, payload.word);
+        if (!ok) {
+          lastErrs = ["semantic_check_failed"];
+          continue;
+        }
+      }
+
+      const mod = await moderate(client, `${payload.word}\n${payload.hints.join("\n")}`);
+      if (mod.flagged) {
+        lastErrs = ["moderation_flagged"];
+        continue;
+      }
+
+      return Response.json(payload, { status: 200 });
     }
 
-    const mod = await moderate(`${payload.word}\n${payload.hints.join("\n")}`);
-    if (mod.flagged) {
-      lastErrs = ["moderation_flagged"];
-      continue;
-    }
-
-    return Response.json(payload, { status: 200 });
+    return Response.json({ error: "Failed to generate a valid word", lastErrs }, { status: 500 });
+  } catch (err: any) {
+    console.error("Unhandled /api/word error:", err?.message || err);
+    return Response.json(
+      { error: "Unhandled server error in /api/word", details: String(err?.message || err) },
+      { status: 500 }
+    );
   }
-
-  return Response.json(
-    { error: "Failed to generate a valid word", lastErrs },
-    { status: 500 }
-  );
 }
