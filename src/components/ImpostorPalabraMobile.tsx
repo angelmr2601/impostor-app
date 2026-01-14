@@ -149,7 +149,6 @@ function normalizeCategoryInput(s: string) {
 function isValidCategoryName(s: string) {
   const name = normalizeCategoryInput(s);
   if (name.length < 3 || name.length > 40) return false;
-  // permitimos letras, números, espacios y algunos signos comunes
   return /^[\p{L}\p{N} áéíóúüñÁÉÍÓÚÜÑ'’\-]+$/u.test(name);
 }
 
@@ -164,36 +163,27 @@ export default function ImpostorPalabraMobile() {
   const [dynamicCategories, setDynamicCategories] = useState<string[]>([]);
   const [newCategory, setNewCategory] = useState("");
 
-  // Cargamos dinámicas desde localStorage al montar
   useEffect(() => {
     setDynamicCategories(loadDynamicCategories());
   }, []);
 
-  // Guardamos dinámicas si cambian
   useEffect(() => {
     saveDynamicCategories(dynamicCategories);
   }, [dynamicCategories]);
 
   const baseCategoryNames = useMemo(() => Object.keys(WORD_BANK), []);
-
-  const categoryNames = useMemo(() => {
-    return uniqueCaseInsensitive([...baseCategoryNames, ...dynamicCategories]);
-  }, [baseCategoryNames, dynamicCategories]);
+  const categoryNames = useMemo(() => uniqueCaseInsensitive([...baseCategoryNames, ...dynamicCategories]), [baseCategoryNames, dynamicCategories]);
 
   const [selectedCategories, setSelectedCategories] = useState<Record<string, boolean>>(() => {
-    // solo base al inicio; dinámicas se inyectan luego con useEffect
     const init: Record<string, boolean> = {};
     for (const c of Object.keys(WORD_BANK)) init[c] = true;
     return init;
   });
 
-  // Asegurar que cada categoría dinámica tenga estado seleccionable (por defecto true)
   useEffect(() => {
     setSelectedCategories((prev) => {
       const next = { ...prev };
-      for (const c of dynamicCategories) {
-        if (next[c] === undefined) next[c] = true;
-      }
+      for (const c of dynamicCategories) if (next[c] === undefined) next[c] = true;
       return next;
     });
   }, [dynamicCategories]);
@@ -210,12 +200,16 @@ export default function ImpostorPalabraMobile() {
   // Reveal
   const [revealIndex, setRevealIndex] = useState(0);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
-  const [revealShown, setRevealShown] = useState(false); // “destapando/viendo”
-  const [pendingNav, setPendingNav] = useState(0); // -1 | +1
+  const [revealShown, setRevealShown] = useState(false);
+  const [pendingNav, setPendingNav] = useState(0);
 
-  // Vote
+  // Alive / Vote
+  const [aliveIds, setAliveIds] = useState<string[]>([]);
   const [mostVotedId, setMostVotedId] = useState<string | null>(null);
-  const [resultHit, setResultHit] = useState<boolean | null>(null);
+
+  // Result
+  const [resultType, setResultType] = useState<"crew_win" | "impostor_win" | "continue" | null>(null);
+  const [eliminatedName, setEliminatedName] = useState<string>("");
 
   // UX
   const [starting, setStarting] = useState(false);
@@ -226,7 +220,7 @@ export default function ImpostorPalabraMobile() {
     [categoryNames, selectedCategories]
   );
 
-  // Selector impostores: depende de inputs, no de nombres rellenados
+  // Impostores selector
   const playersCount = players.length;
   const maxImpostors = Math.max(1, playersCount - 1);
 
@@ -239,7 +233,11 @@ export default function ImpostorPalabraMobile() {
     [players]
   );
 
-  // Al menos 1 categoría seleccionada
+  const alivePlayers = useMemo(() => {
+    const s = new Set(aliveIds);
+    return validPlayers.filter((p) => s.has(p.id));
+  }, [aliveIds, validPlayers]);
+
   const hasAnyCategory = selectedCategoryList.length >= 1;
 
   const canStart =
@@ -249,12 +247,10 @@ export default function ImpostorPalabraMobile() {
     hasAnyCategory &&
     !starting;
 
-  // Cambiar de jugador => tapado
   useEffect(() => {
     setRevealShown(false);
   }, [revealIndex]);
 
-  // Navegación 1 toque: si se está destapando, ocultamos y luego navegamos
   useEffect(() => {
     if (pendingNav === 0) return;
     if (revealShown) return;
@@ -270,8 +266,13 @@ export default function ImpostorPalabraMobile() {
     setRevealed({});
     setRevealShown(false);
     setPendingNav(0);
+
+    setAliveIds([]);
     setMostVotedId(null);
-    setResultHit(null);
+
+    setResultType(null);
+    setEliminatedName("");
+
     setStarting(false);
     setStartError("");
     setImpostorHintText("");
@@ -293,15 +294,13 @@ export default function ImpostorPalabraMobile() {
   async function startGame() {
     setStarting(true);
     setStartError("");
+    setResultType(null);
+    setEliminatedName("");
 
-    // Roles: aleatorio (primeros N impostores tras barajar)
     const shuffled = [...validPlayers].sort(() => Math.random() - 0.5);
     const impostors = shuffled.slice(0, impostorCount).map((p) => p.id);
 
-    // Palabra (API -> fallback local)
     const usedWords = typeof window !== "undefined" ? (getUsedWords() as string[]) : [];
-
-    // Categorías locales seleccionadas (las que tienen pool)
     const selectedLocalCategories = selectedCategoryList.filter((c) => !!WORD_BANK[c]);
 
     let picked: Secret | null = null;
@@ -309,7 +308,6 @@ export default function ImpostorPalabraMobile() {
     try {
       picked = await fetchSecretFromApi(selectedCategoryList, usedWords);
     } catch {
-      // Fallback local SOLO si hay categorías locales seleccionadas
       if (selectedLocalCategories.length === 0) {
         setStarting(false);
         setStartError(
@@ -321,7 +319,6 @@ export default function ImpostorPalabraMobile() {
       setStartError("No se pudo usar IA (usando pool local). Revisa /api/word y la API key.");
     }
 
-    // Pista estable para TODOS los impostores
     const hint = giveImpostorHint ? buildImpostorHintOnce(picked!, hintStyle) : "";
 
     setImpostorIds(impostors);
@@ -333,8 +330,8 @@ export default function ImpostorPalabraMobile() {
     setRevealShown(false);
     setPendingNav(0);
 
+    setAliveIds(validPlayers.map((p) => p.id));
     setMostVotedId(null);
-    setResultHit(null);
 
     if (picked?.word) pushUsedWord(String(picked.word));
 
@@ -370,8 +367,43 @@ export default function ImpostorPalabraMobile() {
   }
 
   function submitVote() {
-    const hit = mostVotedId ? impostorIds.includes(mostVotedId) : false;
-    setResultHit(hit);
+    if (!mostVotedId) return;
+
+    const votedPlayer = alivePlayers.find((p) => p.id === mostVotedId);
+    const votedName = votedPlayer?.name || "";
+
+    const votedIsImpostor = impostorIds.includes(mostVotedId);
+
+    // Eliminar siempre al más votado
+    const nextAliveIds = aliveIds.filter((id) => id !== mostVotedId);
+    const nextAlivePlayers = validPlayers.filter((p) => nextAliveIds.includes(p.id));
+
+    const nextImpostorsAlive = nextAlivePlayers.filter((p) => impostorIds.includes(p.id)).length;
+    const nextCrewAlive = nextAlivePlayers.length - nextImpostorsAlive;
+
+    setAliveIds(nextAliveIds);
+    setEliminatedName(votedName);
+
+    // Si era impostor: solo ganan tripulantes si ya no quedan impostores
+    if (votedIsImpostor) {
+      if (nextImpostorsAlive === 0) {
+        setResultType("crew_win");
+        setPhase(PHASES.RESULT);
+        return;
+      }
+      setResultType("continue");
+      setPhase(PHASES.RESULT);
+      return;
+    }
+
+    // Si era tripulante: si impostores >= tripulantes => ganan impostores
+    if (nextImpostorsAlive >= nextCrewAlive) {
+      setResultType("impostor_win");
+      setPhase(PHASES.RESULT);
+      return;
+    }
+
+    setResultType("continue");
     setPhase(PHASES.RESULT);
   }
 
@@ -394,12 +426,7 @@ export default function ImpostorPalabraMobile() {
 
         <AnimatePresence mode="wait">
           {phase === PHASES.SETUP && (
-            <motion.div
-              key="setup"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-            >
+            <motion.div key="setup" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Configurar</CardTitle>
@@ -461,7 +488,6 @@ export default function ImpostorPalabraMobile() {
                             return;
                           }
                           setDynamicCategories((list) => uniqueCaseInsensitive([...list, name]));
-                          // por defecto seleccionada
                           setSelectedCategories((s) => ({ ...s, [name]: true }));
                           setNewCategory("");
                         }}
@@ -469,9 +495,7 @@ export default function ImpostorPalabraMobile() {
                         Añadir
                       </Button>
                     </div>
-                    <div className="text-xs text-black/60">
-                      Se guarda en este dispositivo. Puedes borrarla cuando quieras.
-                    </div>
+                    <div className="text-xs text-black/60">Se guarda en este dispositivo. Puedes borrarla cuando quieras.</div>
 
                     {dynamicCategories.length > 0 && (
                       <div className="flex items-center justify-between">
@@ -583,10 +607,7 @@ export default function ImpostorPalabraMobile() {
                         <Button variant={hintStyle === "category" ? "default" : "outline"} onClick={() => setHintStyle("category")}>
                           Categoría
                         </Button>
-                        <Button
-                          variant={hintStyle === "first_letter" ? "default" : "outline"}
-                          onClick={() => setHintStyle("first_letter")}
-                        >
+                        <Button variant={hintStyle === "first_letter" ? "default" : "outline"} onClick={() => setHintStyle("first_letter")}>
                           1ª letra
                         </Button>
                       </div>
@@ -611,12 +632,7 @@ export default function ImpostorPalabraMobile() {
           )}
 
           {phase === PHASES.REVEAL && (
-            <motion.div
-              key="reveal"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-            >
+            <motion.div key="reveal" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Privado</CardTitle>
@@ -627,9 +643,7 @@ export default function ImpostorPalabraMobile() {
                       <div className="text-xs text-black/60">Jugador</div>
                       <div className="text-xl font-semibold">{currentRevealPlayer()?.name || ""}</div>
                     </div>
-                    <Badge variant="secondary">
-                      {Object.keys(revealed).length}/{validPlayers.length}
-                    </Badge>
+                    <Badge variant="secondary">{Object.keys(revealed).length}/{validPlayers.length}</Badge>
                   </div>
 
                   {(() => {
@@ -641,7 +655,6 @@ export default function ImpostorPalabraMobile() {
 
                     return (
                       <div className="relative">
-                        {/* Privacy shield */}
                         {revealShown && (
                           <div className="fixed inset-0 z-40 pointer-events-none">
                             <div className="absolute inset-0 bg-black/70" />
@@ -693,12 +706,7 @@ export default function ImpostorPalabraMobile() {
           )}
 
           {phase === PHASES.VOTE && (
-            <motion.div
-              key="vote"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-            >
+            <motion.div key="vote" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Votación</CardTitle>
@@ -708,8 +716,10 @@ export default function ImpostorPalabraMobile() {
                     Votad señalando y elige aquí al <span className="font-medium">más votado</span>.
                   </div>
 
+                  <div className="text-xs text-black/60">Quedan {alivePlayers.length} jugadores.</div>
+
                   <div className="grid grid-cols-2 gap-2">
-                    {validPlayers.map((p) => (
+                    {alivePlayers.map((p) => (
                       <Button
                         key={p.id}
                         variant={mostVotedId === p.id ? "default" : "outline"}
@@ -734,37 +744,41 @@ export default function ImpostorPalabraMobile() {
           )}
 
           {phase === PHASES.RESULT && (
-            <motion.div
-              key="result"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-            >
+            <motion.div key="result" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Resultado</CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-3">
                   <div className="rounded-2xl border border-black/10 p-4">
-                    <div className="text-xs text-black/60">Más votado</div>
-                    <div className="text-xl font-semibold">
-                      {validPlayers.find((p) => p.id === mostVotedId)?.name || ""}
-                    </div>
+                    <div className="text-xs text-black/60">Eliminado</div>
+                    <div className="text-xl font-semibold">{eliminatedName || "—"}</div>
                   </div>
 
-                  {resultHit ? (
+                  {resultType === "crew_win" && (
                     <div className="rounded-2xl border border-black/10 p-4">
                       <div className="text-sm font-semibold">✅ Victoria de los tripulantes</div>
-                      <div className="text-sm text-black/60 mt-1">Habéis encontrado al impostor.</div>
-                    </div>
-                  ) : (
-                    <div className="rounded-2xl border border-black/10 p-4">
-                      <div className="text-sm font-semibold">❌ No acierto</div>
-                      <div className="text-sm text-black/60 mt-1">El más votado era tripulante.</div>
+                      <div className="text-sm text-black/60 mt-1">No queda ningún impostor vivo.</div>
                     </div>
                   )}
 
-                  {resultHit ? (
+                  {resultType === "impostor_win" && (
+                    <div className="rounded-2xl border border-black/10 p-4">
+                      <div className="text-sm font-semibold">🟥 Victoria de los impostores</div>
+                      <div className="text-sm text-black/60 mt-1">
+                        Los impostores ya son mayoría (o empate) frente a los tripulantes.
+                      </div>
+                    </div>
+                  )}
+
+                  {resultType === "continue" && (
+                    <div className="rounded-2xl border border-black/10 p-4">
+                      <div className="text-sm font-semibold">🗳️ Continuar</div>
+                      <div className="text-sm text-black/60 mt-1">Sigue la votación sin el eliminado.</div>
+                    </div>
+                  )}
+
+                  {resultType === "crew_win" || resultType === "impostor_win" ? (
                     <Button className="w-full h-12 text-base" onClick={resetAll}>
                       Nueva partida
                     </Button>
@@ -776,7 +790,7 @@ export default function ImpostorPalabraMobile() {
                         setPhase(PHASES.VOTE);
                       }}
                     >
-                      Volver a votar
+                      Seguir votando
                     </Button>
                   )}
                 </CardContent>
@@ -791,10 +805,9 @@ export default function ImpostorPalabraMobile() {
 
 /**
  * RevealPanel “destapar tarjeta”
- * - Rol/palabra debajo
- * - Cortina tapa arriba con overflow-hidden (sin solapes)
- * - Al deslizar hacia arriba: se destapa progresivo
- * - Al soltar: se tapa
+ * - Contenido debajo
+ * - Cortina con overflow-hidden para que NO se solapen textos
+ * - Privacy shield ya lo gestiona el padre con shown
  */
 function RevealPanel({
   playerName,
@@ -849,7 +862,7 @@ function RevealPanel({
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
     if (!holding || startY === null) return;
 
-    const raw = startY - e.clientY; // arriba => positivo
+    const raw = startY - e.clientY;
     const nextDy = clamp(raw, 0, COVER_MAX_PX);
     setDy(nextDy);
 
@@ -914,7 +927,7 @@ function RevealPanel({
           </div>
         </div>
 
-        {/* Cortina tapa (overflow-hidden para que NO se solapen textos) */}
+        {/* Cortina */}
         <div
           className="absolute inset-x-0 top-0 bg-white overflow-hidden z-20"
           style={{
@@ -922,7 +935,6 @@ function RevealPanel({
             transition: holding ? "none" : "height 120ms ease-out",
           }}
         >
-          {/* Solo mostramos texto si hay altura suficiente */}
           {coverHeight > 72 && (
             <div className="p-4">
               <div className="text-sm font-semibold">Tarjeta tapada</div>
@@ -936,7 +948,6 @@ function RevealPanel({
             </div>
           )}
 
-          {/* Asa */}
           <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-14 h-1.5 rounded-full bg-black/20" />
         </div>
       </div>

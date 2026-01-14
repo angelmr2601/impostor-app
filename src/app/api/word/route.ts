@@ -26,7 +26,6 @@ function hintLeaksWord(word: string, hint: string) {
 
 function sanitizeCategory(c: string) {
   const s = String(c).replace(/\s+/g, " ").trim();
-  // 3–40 chars, letras/números/espacios y algunos signos habituales
   if (s.length < 3 || s.length > 40) return null;
   if (!/^[\p{L}\p{N} áéíóúüñÁÉÍÓÚÜÑ'’\-]+$/u.test(s)) return null;
   return s;
@@ -96,15 +95,15 @@ export async function POST(req: Request) {
       "Genera una palabra para un juego social tipo 'impostor'.",
       "Idioma: español.",
       `Categorías permitidas: ${selected.join(", ")}.`,
-      "Regla MUY IMPORTANTE: si una categoría es una frase (ej: 'estadios de fútbol'), genera SOLO ENTIDADES específicas de esa categoría (nombres propios reales).",
-"No generes cosas relacionadas ni genéricas (ej: NO 'grada', NO 'césped', NO 'portería', NO 'afición').",
-"La 'word' debe ser el nombre de la entidad (ej: 'Camp Nou', 'Santiago Bernabéu', 'Old Trafford').",
+      "REGLA MUY IMPORTANTE: si una categoría es una frase (ej: 'estadios de fútbol'), genera SOLO ENTIDADES específicas de esa categoría (nombres propios reales).",
+      "No generes cosas relacionadas ni genéricas (ej: NO 'grada', NO 'césped', NO 'portería', NO 'afición').",
+      "La 'word' debe ser el nombre de la entidad (ej: 'Camp Nou', 'Santiago Bernabéu', 'Old Trafford').",
       `Dificultad: ${difficulty}.`,
-      "La palabra debe ser común, concreta y apta para todas las edades.",
+      "La palabra debe ser apta para todas las edades.",
       "Se permiten 1 a 3 palabras (máx 2 espacios).",
       `NO repitas palabras usadas: ${usedWords.slice(-50).join(", ") || "(ninguna)"}.`,
       "Devuelve EXACTAMENTE 3 pistas relacionadas.",
-      "Las pistas NO deben incluir ninguna parte de la palabra (ni tokens largos).",
+      "Las pistas NO deben incluir ninguna parte de la palabra (ni tokens largos dentro del nombre).",
       lastErrs.length ? `Corrige estos errores previos: ${lastErrs.join(", ")}.` : "",
     ]
       .filter(Boolean)
