@@ -4,34 +4,12 @@ export const runtime = "nodejs";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-// 1 a 3 palabras (máx 2 espacios), letras españolas (mayúsculas/minúsculas)
+// 1 a 3 palabras (máx 2 espacios)
 const WORD_RE = /^[a-záéíóúüñ]+(?: [a-záéíóúüñ]+){0,2}$/i;
 
-// Para “solo entidades” (nombres propios): 1–4 palabras, cada una con mayúscula inicial
-const ENTITY_NAME_RE = /^[A-ZÁÉÍÓÚÜÑ][\p{L}\p{N}'’\-]+(?: [A-ZÁÉÍÓÚÜÑ][\p{L}\p{N}'’\-]+){0,3}$/u;
-
-// Palabras genéricas comunes que NO queremos como “entidades”
-const GENERIC_BANNED = new Set(
-  [
-    "cine",
-    "playa",
-    "pizza",
-    "sushi",
-    "paella",
-    "tacos",
-    "hospital",
-    "museo",
-    "biblioteca",
-    "aeropuerto",
-    "telefono",
-    "paraguas",
-    "llave",
-    "gafas",
-    "futbol",
-    "camping",
-    "concierto",
-  ].map((x) => x.toLowerCase())
-);
+// Nombre propio (Camp Nou, Santiago Bernabéu, Old Trafford)
+const ENTITY_NAME_RE =
+  /^[A-ZÁÉÍÓÚÜÑ][\p{L}\p{N}'’\-]+(?: [A-ZÁÉÍÓÚÜÑ][\p{L}\p{N}'’\-]+){0,3}$/u;
 
 function normalize(s: string) {
   return s
@@ -58,18 +36,12 @@ function sanitizeCategory(c: string) {
 }
 
 /**
- * Decide si una categoría debe generar SOLO ENTIDADES reales.
+ * Categorías que SOLO admiten entidades reales
  * (por ahora: estadios)
- * Puedes ampliar con más patrones si quieres.
  */
 function isEntitiesOnlyCategory(category: string) {
   const c = normalize(category);
-  // cubre: "estadios de futbol", "estadios fútbol", etc.
   return c.includes("estadio") || c.includes("estadios");
-}
-
-function isAllLowercase(word: string) {
-  return word === word.toLowerCase();
 }
 
 function hardValidate(payload: any, selectedCategories: string[], usedWords: string[]) {
@@ -85,16 +57,9 @@ function hardValidate(payload: any, selectedCategories: string[], usedWords: str
   const used = new Set((usedWords || []).map((w) => normalize(String(w))));
   if (used.has(normalize(word))) errs.push("word_repeated");
 
-  // ✅ Validación extra para categorías “solo entidades”
+  // Validación extra para categorías SOLO entidades
   if (isEntitiesOnlyCategory(category)) {
-    // 1) Que sea nombre propio (mayúsculas iniciales)
     if (!ENTITY_NAME_RE.test(word)) errs.push("entity_name_required");
-
-    // 2) Que no sea una palabra genérica/banneada
-    if (GENERIC_BANNED.has(normalize(word))) errs.push("generic_word_not_allowed");
-
-    // 3) Evita cosas tipo "cine" aunque pase el regex: (all lowercase)
-    if (isAllLowercase(word)) errs.push("entity_must_have_capitalization");
   }
 
   if (hints.length !== 3) errs.push("hints_count");
@@ -115,13 +80,59 @@ async function moderate(text: string) {
   return { flagged: !!r.results?.[0]?.flagged };
 }
 
+/**
+ * ✅ Verificador semántico
+ * Comprueba si la palabra ES REALMENTE un estadio de fútbol
+ */
+async function verifyFootballStadium(word: string) {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      ok: { type: "boolean" },
+      reason: { type: "string" },
+    },
+    required: ["ok", "reason"],
+  } as const;
+
+  const prompt = [
+    "Responde SOLO con JSON.",
+    "Pregunta: ¿La siguiente palabra es el nombre real de un estadio de fútbol?",
+    "Si no es un estadio (animal, comida, objeto, concepto, lugar genérico), responde ok=false.",
+    `Palabra: "${word}"`,
+  ].join("\n");
+
+  const resp = await client.responses.create({
+    model: "gpt-5-mini",
+    input: prompt,
+    store: false,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "stadium_check",
+        strict: true,
+        schema,
+      },
+    },
+  });
+
+  try {
+    const parsed = JSON.parse(resp.output_text || "");
+    return parsed.ok === true;
+  } catch {
+    return false; // si falla, ser estrictos
+  }
+}
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const categoriesRaw: unknown = body.categories;
+  const categoriesRaw = body.categories;
   const difficulty: "easy" | "normal" | "hard" = body.difficulty || "easy";
   const usedWords: string[] = Array.isArray(body.usedWords) ? body.usedWords : [];
 
-  const categories = Array.isArray(categoriesRaw) ? categoriesRaw.map((c) => sanitizeCategory(String(c))) : [];
+  const categories = Array.isArray(categoriesRaw)
+    ? categoriesRaw.map((c: any) => sanitizeCategory(String(c)))
+    : [];
   const selected = categories.filter(Boolean) as string[];
 
   if (!selected.length) {
@@ -143,19 +154,18 @@ export async function POST(req: Request) {
 
   let lastErrs: string[] = [];
 
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const prompt = [
       "Genera una palabra para un juego social tipo 'impostor'.",
       "Idioma: español.",
       `Categorías permitidas: ${selected.join(", ")}.`,
       "",
-      "REGLA PRINCIPAL: elige UNA categoría del listado y genera una 'word' que sea una INSTANCIA real y específica de esa categoría.",
-      "NO generes palabras de otra categoría.",
+      "Regla clave: la palabra debe pertenecer ESTRICTAMENTE a la categoría elegida.",
       "",
-      "REGLA DE CATEGORÍAS 'SOLO ENTIDADES': si la categoría contiene 'estadio/estadios', la 'word' debe ser SOLO un NOMBRE PROPIO real de un estadio.",
-      "Ejemplos válidos: 'Camp Nou', 'Santiago Bernabéu', 'Old Trafford', 'San Mamés', 'Metropolitano'.",
-      "Ejemplos prohibidos: 'cine', 'grada', 'césped', 'portería', 'afición'.",
-      "En estas categorías, usa mayúsculas iniciales (Nombre Propio).",
+      "REGLA ESPECIAL:",
+      "Si la categoría contiene 'estadio/estadios', la palabra debe ser SOLO el nombre real de un estadio de fútbol.",
+      "Ejemplos válidos: Camp Nou, Santiago Bernabéu, Old Trafford, San Mamés, Wembley.",
+      "Ejemplos NO válidos: animales, comida, objetos, conceptos o partes del estadio.",
       "",
       `Dificultad: ${difficulty}.`,
       "La palabra debe ser apta para todas las edades.",
@@ -163,7 +173,7 @@ export async function POST(req: Request) {
       `NO repitas palabras usadas: ${usedWords.slice(-50).join(", ") || "(ninguna)"}.`,
       "",
       "Devuelve EXACTAMENTE 3 pistas relacionadas.",
-      "Las pistas NO deben incluir ninguna parte de la palabra (ni tokens largos dentro del nombre).",
+      "Las pistas NO deben incluir ninguna parte del nombre.",
       lastErrs.length ? `Corrige estos errores previos: ${lastErrs.join(", ")}.` : "",
     ]
       .filter(Boolean)
@@ -183,10 +193,9 @@ export async function POST(req: Request) {
       },
     });
 
-    const raw = resp.output_text?.trim() || "";
-    let payload: any = null;
+    let payload: any;
     try {
-      payload = JSON.parse(raw);
+      payload = JSON.parse(resp.output_text || "");
     } catch {
       lastErrs = ["json_parse_failed"];
       continue;
@@ -198,6 +207,15 @@ export async function POST(req: Request) {
       continue;
     }
 
+    // ✅ comprobación semántica FINAL
+    if (isEntitiesOnlyCategory(payload.category)) {
+      const ok = await verifyFootballStadium(payload.word);
+      if (!ok) {
+        lastErrs = ["semantic_check_failed"];
+        continue;
+      }
+    }
+
     const mod = await moderate(`${payload.word}\n${payload.hints.join("\n")}`);
     if (mod.flagged) {
       lastErrs = ["moderation_flagged"];
@@ -207,5 +225,8 @@ export async function POST(req: Request) {
     return Response.json(payload, { status: 200 });
   }
 
-  return Response.json({ error: "Failed to generate a valid word", lastErrs }, { status: 500 });
+  return Response.json(
+    { error: "Failed to generate a valid word", lastErrs },
+    { status: 500 }
+  );
 }
