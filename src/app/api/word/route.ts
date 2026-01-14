@@ -4,8 +4,34 @@ export const runtime = "nodejs";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-// 1 a 3 palabras (máx 2 espacios), letras españolas
+// 1 a 3 palabras (máx 2 espacios), letras españolas (mayúsculas/minúsculas)
 const WORD_RE = /^[a-záéíóúüñ]+(?: [a-záéíóúüñ]+){0,2}$/i;
+
+// Para “solo entidades” (nombres propios): 1–4 palabras, cada una con mayúscula inicial
+const ENTITY_NAME_RE = /^[A-ZÁÉÍÓÚÜÑ][\p{L}\p{N}'’\-]+(?: [A-ZÁÉÍÓÚÜÑ][\p{L}\p{N}'’\-]+){0,3}$/u;
+
+// Palabras genéricas comunes que NO queremos como “entidades”
+const GENERIC_BANNED = new Set(
+  [
+    "cine",
+    "playa",
+    "pizza",
+    "sushi",
+    "paella",
+    "tacos",
+    "hospital",
+    "museo",
+    "biblioteca",
+    "aeropuerto",
+    "telefono",
+    "paraguas",
+    "llave",
+    "gafas",
+    "futbol",
+    "camping",
+    "concierto",
+  ].map((x) => x.toLowerCase())
+);
 
 function normalize(s: string) {
   return s
@@ -31,6 +57,21 @@ function sanitizeCategory(c: string) {
   return s;
 }
 
+/**
+ * Decide si una categoría debe generar SOLO ENTIDADES reales.
+ * (por ahora: estadios)
+ * Puedes ampliar con más patrones si quieres.
+ */
+function isEntitiesOnlyCategory(category: string) {
+  const c = normalize(category);
+  // cubre: "estadios de futbol", "estadios fútbol", etc.
+  return c.includes("estadio") || c.includes("estadios");
+}
+
+function isAllLowercase(word: string) {
+  return word === word.toLowerCase();
+}
+
 function hardValidate(payload: any, selectedCategories: string[], usedWords: string[]) {
   const errs: string[] = [];
   const category = String(payload?.category ?? "").trim();
@@ -43,6 +84,18 @@ function hardValidate(payload: any, selectedCategories: string[], usedWords: str
 
   const used = new Set((usedWords || []).map((w) => normalize(String(w))));
   if (used.has(normalize(word))) errs.push("word_repeated");
+
+  // ✅ Validación extra para categorías “solo entidades”
+  if (isEntitiesOnlyCategory(category)) {
+    // 1) Que sea nombre propio (mayúsculas iniciales)
+    if (!ENTITY_NAME_RE.test(word)) errs.push("entity_name_required");
+
+    // 2) Que no sea una palabra genérica/banneada
+    if (GENERIC_BANNED.has(normalize(word))) errs.push("generic_word_not_allowed");
+
+    // 3) Evita cosas tipo "cine" aunque pase el regex: (all lowercase)
+    if (isAllLowercase(word)) errs.push("entity_must_have_capitalization");
+  }
 
   if (hints.length !== 3) errs.push("hints_count");
   for (const h of hints) {
@@ -90,18 +143,25 @@ export async function POST(req: Request) {
 
   let lastErrs: string[] = [];
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     const prompt = [
       "Genera una palabra para un juego social tipo 'impostor'.",
       "Idioma: español.",
       `Categorías permitidas: ${selected.join(", ")}.`,
-      "REGLA MUY IMPORTANTE: si una categoría es una frase (ej: 'estadios de fútbol'), genera SOLO ENTIDADES específicas de esa categoría (nombres propios reales).",
-      "No generes cosas relacionadas ni genéricas (ej: NO 'grada', NO 'césped', NO 'portería', NO 'afición').",
-      "La 'word' debe ser el nombre de la entidad (ej: 'Camp Nou', 'Santiago Bernabéu', 'Old Trafford').",
+      "",
+      "REGLA PRINCIPAL: elige UNA categoría del listado y genera una 'word' que sea una INSTANCIA real y específica de esa categoría.",
+      "NO generes palabras de otra categoría.",
+      "",
+      "REGLA DE CATEGORÍAS 'SOLO ENTIDADES': si la categoría contiene 'estadio/estadios', la 'word' debe ser SOLO un NOMBRE PROPIO real de un estadio.",
+      "Ejemplos válidos: 'Camp Nou', 'Santiago Bernabéu', 'Old Trafford', 'San Mamés', 'Metropolitano'.",
+      "Ejemplos prohibidos: 'cine', 'grada', 'césped', 'portería', 'afición'.",
+      "En estas categorías, usa mayúsculas iniciales (Nombre Propio).",
+      "",
       `Dificultad: ${difficulty}.`,
       "La palabra debe ser apta para todas las edades.",
       "Se permiten 1 a 3 palabras (máx 2 espacios).",
       `NO repitas palabras usadas: ${usedWords.slice(-50).join(", ") || "(ninguna)"}.`,
+      "",
       "Devuelve EXACTAMENTE 3 pistas relacionadas.",
       "Las pistas NO deben incluir ninguna parte de la palabra (ni tokens largos dentro del nombre).",
       lastErrs.length ? `Corrige estos errores previos: ${lastErrs.join(", ")}.` : "",
